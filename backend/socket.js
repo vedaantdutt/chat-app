@@ -10,13 +10,13 @@ module.exports = (server) => {
   const onlineUsers = new Map(); // userId => socket.id
 
   io.on("connection", (socket) => {
-    console.log("A user connected", socket.id);
+    // console.log("A user connected", socket.id);
 
     // Track online user
     socket.on("login", (userId) => {
       try {
         onlineUsers.set(userId, socket.id);
-        console.log("Online users:", [...onlineUsers.keys()]);
+        // console.log("Online users:", [...onlineUsers.keys()]);
 
         // 🔴 Broadcast online users list to everyone
         io.emit("updateOnlineUsers", [...onlineUsers.keys()]);
@@ -30,6 +30,8 @@ module.exports = (server) => {
       try {
         // Save to DB
         // console.log("creating msg", { senderId, receiverId, text });
+
+        console.log("Creating message:", { senderId, receiverId, text });
         const msg = await Message.create({ senderId, receiverId, text });
 
         // Send to receiver if online
@@ -90,7 +92,7 @@ module.exports = (server) => {
       for (let [userId, id] of onlineUsers.entries()) {
         if (id === socket.id) {
           onlineUsers.delete(userId);
-          console.log(`User ${userId} disconnected`);
+          // console.log(`User ${userId} disconnected`);
 
           // 🔴 Broadcast updated list after removal
           io.emit("updateOnlineUsers", [...onlineUsers.keys()]);
