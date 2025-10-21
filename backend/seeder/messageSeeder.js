@@ -15,7 +15,7 @@ async function seedMessages() {
     {
       senderId: "66aea3adc8819b162ce5e002",
       receiverId: "66aea3adc8819b162ce5e001",
-      text: "I’m good, thanks! You?",
+      text: "I’m good, thanks! How about you?",
       status: "read"
     },
     {

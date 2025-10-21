@@ -1,6 +1,5 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { io } from "socket.io-client";
-import { useRef } from "react";
 
 export default function Chat({ user, setUser }) {
   const [users, setUsers] = useState([]);
@@ -10,92 +9,144 @@ export default function Chat({ user, setUser }) {
   const [input, setInput] = useState("");
   const [showMenu, setShowMenu] = useState(false);
 
-  const socket = useRef(io("http://localhost:5000")).current;
+  // initialize socket once
+  const socketRef = useRef(null);
+
+  useEffect(() => {
+    socketRef.current = io("http://localhost:5000");
+    const sock = socketRef.current;
+
+    // send login when connected
+    sock.on("connect", () => {
+      if (user && user.userId) sock.emit("login", user.userId);
+    });
+
+    // online users list
+    sock.on("updateOnlineUsers", (online) => {
+      setOnlineUsers(online || []);
+    });
+
+    // server confirms saved message -> replace local placeholder (if any)
+    sock.on("messageSent", (serverMsg) => {
+      setMessages((prev) =>
+        prev.map((m) =>
+          // match by text + sender + receiver + createdAt if available, otherwise fall back to keep as-is
+          (!m._id &&
+            m.text === serverMsg.text &&
+            m.senderId === serverMsg.senderId &&
+            m.receiverId === serverMsg.receiverId)
+            ? serverMsg
+            : m
+        )
+      );
+    });
+
+    sock.on("receiveMessage", (msg) => {
+      setMessages((prev) => [...prev, msg]);
+    });
+
+    sock.on("messageEdited", (payload) => {
+      const updated = payload && payload._id ? payload : null;
+      if (updated) {
+        setMessages((prev) => prev.map((m) => (m._id === updated._id ? updated : m)));
+      }
+    });
+
+    sock.on("messageDeleted", (payload) => {
+      const id = typeof payload === "string" ? payload : payload && (payload._id || payload.messageId || payload.id);
+      if (!id) return;
+      setMessages((prev) => prev.filter((m) => m._id !== id));
+    });
+
+    sock.on("messageDeletedForMe", ({ messageId }) => {
+      if (!messageId) return;
+      setMessages((prev) => prev.filter((m) => m._id !== messageId));
+    });
+
+    return () => {
+      sock.off("connect");
+      sock.off("updateOnlineUsers");
+      sock.off("messageSent");
+      sock.off("receiveMessage");
+      sock.off("messageEdited");
+      sock.off("messageDeleted");
+      sock.off("messageDeletedForMe");
+      sock.disconnect();
+    };
+  }, [user?.userId]);
 
   // Fetch all users except self
   useEffect(() => {
     fetch("http://localhost:5000/api/auth/users")
       .then((res) => res.json())
       .then((data) => {
-        // console.log("All users in DB:", data);
-        setUsers(data.filter((u) => u._id !== user.userId));
-      });
+        setUsers((data || []).filter((u) => u._id !== user.userId));
+      })
+      .catch(console.error);
   }, [user.userId]);
 
-  // Load chat history with selected user
+  // Load chat history with selected user and normalize _id
   useEffect(() => {
-    console.log("check1");
-    if (!selectedUser) return;
-    console.log("check2");
+    if (!selectedUser) {
+      setMessages([]);
+      return;
+    }
 
     fetch(
       `http://localhost:5000/api/auth/messages/${user.userId}/${selectedUser._id}`
     )
       .then((res) => res.json())
       .then((data) => {
-        setMessages(data.messages || []);
-        console.log("The messages are", data.messages);
+        const msgs = (data.messages || []).map((m) => ({ ...m, _id: m._id || m.id }));
+        setMessages(msgs);
       })
-      .catch((err) => console.error(err));
+      .catch(console.error);
   }, [selectedUser, user.userId]);
-
-  useEffect(() => {
-    socket.on("updateOnlineUsers", (online) => {
-      setOnlineUsers(online);
-    });
-
-    return () => {
-      socket.off("updateOnlineUsers");
-    };
-  }, []);
-
-  // Listen for new messages
-  useEffect(() => {
-    socket.emit("login", user.userId);
-
-    socket.on("receiveMessage", (msg) => {
-      setMessages((prev) => [...prev, msg]);
-    });
-
-    socket.on("onlineUsers", (onlineIds) => {
-      setOnlineUsers(new Set(onlineIds)); // store in Set for easy lookup
-    });
-
-    socket.on("messageEdited", (msg) => {
-      setMessages((prev) => prev.map((m) => (m._id === msg._id ? msg : m)));
-    });
-
-    socket.on("messageDeleted", (msg) => {
-      setMessages((prev) => prev.map((m) => (m._id === msg._id ? msg : m)));
-    });
-
-    socket.on("messageDeletedForMe", ({ messageId }) => {
-      setMessages((prev) => prev.filter((m) => m._id !== messageId));
-    });
-
-    return () => {
-      socket.disconnect();
-    };
-  }, [user.userId]);
 
   const sendMessage = () => {
     if (!input || !selectedUser) return;
 
-    socket.emit("sendMessage", {
+    // optimistic local message (no _id) so the UI shows it instantly
+    const placeholder = {
+      _id: `local-${Date.now()}`,
+      senderId: user.userId,
+      receiverId: selectedUser._id,
+      text: input,
+      createdAt: new Date().toISOString(),
+      pending: true,
+    };
+    setMessages((prev) => [...prev, placeholder]);
+
+    socketRef.current?.emit("sendMessage", {
       senderId: user.userId,
       receiverId: selectedUser._id,
       text: input,
     });
 
-    setMessages((prev) => [
-      ...prev,
-      { senderId: user.userId, receiverId: selectedUser._id, text: input },
-    ]);
     setInput("");
   };
 
+  const handleEdit = (m) => {
+    const newText = prompt("Edit message:", m.text);
+    if (!newText || newText === m.text) return;
+    // optimistic update locally
+    setMessages((prev) => prev.map((msg) => (msg._id === m._id ? { ...msg, text: newText, edited: true } : msg)));
+    socketRef.current?.emit("editMessage", { messageId: m._id, newText });
+  };
+
+  const handleDelete = (m) => {
+    // optimistic remove from UI immediately
+    setMessages((prev) => prev.filter((msg) => msg._id !== m._id));
+    socketRef.current?.emit("deleteMessage", { messageId: m._id });
+  };
+
+  const handleDeleteForMe = (m) => {
+    // remove locally and inform server
+    setMessages((prev) => prev.filter((msg) => msg._id !== m._id));
+    socketRef.current?.emit("deleteMessageForMe", { messageId: m._id, userId: user.userId });
+  };
+
   const goToProfile = () => {
-    // Redirect to profile page
     window.location.href = "/profile";
   };
 
@@ -110,8 +161,7 @@ export default function Chat({ user, setUser }) {
             style={{
               cursor: "pointer",
               padding: 5,
-              background:
-                selectedUser && selectedUser._id === u._id ? "#eee" : "",
+              background: selectedUser && selectedUser._id === u._id ? "#eee" : "",
               display: "flex",
               alignItems: "center",
               gap: "6px",
@@ -123,7 +173,7 @@ export default function Chat({ user, setUser }) {
                 width: 10,
                 height: 10,
                 borderRadius: "50%",
-                background: onlineUsers.includes(u._id) ? "green" : "gray",
+                background: Array.isArray(onlineUsers) ? (onlineUsers.includes(u._id) ? "green" : "gray") : "gray",
                 display: "inline-block",
               }}
             />
@@ -144,7 +194,7 @@ export default function Chat({ user, setUser }) {
         >
           {messages.map((m, i) => (
             <div
-              key={i}
+              key={m._id || `local-${i}`}
               style={{
                 display: "flex",
                 justifyContent: "space-between",
@@ -157,16 +207,10 @@ export default function Chat({ user, setUser }) {
             >
               {/* Message text */}
               <div>
-                <b>
-                  {m.senderId === user.userId ? "You" : selectedUser.username}:
-                </b>{" "}
+                <b>{m.senderId === user.userId ? "You" : selectedUser.username}:</b>{" "}
                 {m.deleted ? <i>{m.text}</i> : m.text}
-                {m.edited && !m.deleted && (
-                  <span style={{ fontSize: "10px", color: "gray" }}>
-                    {" "}
-                    (edited)
-                  </span>
-                )}
+                {m.edited && !m.deleted && <span style={{ fontSize: "10px", color: "gray" }}> (edited)</span>}
+                {m.pending && <span style={{ fontSize: "10px", color: "gray" }}> (sending...)</span>}
               </div>
 
               {/* Timestamp + status */}
@@ -180,12 +224,7 @@ export default function Chat({ user, setUser }) {
                 }}
               >
                 <span>
-                  {m.createdAt
-                    ? new Date(m.createdAt).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })
-                    : ""}
+                  {m.createdAt ? new Date(m.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}
                 </span>
                 {m.senderId === user.userId && (
                   <span>
@@ -199,49 +238,16 @@ export default function Chat({ user, setUser }) {
               {/* Action menu (only your messages, not deleted) */}
               {m.senderId === user.userId && !m.deleted && (
                 <div style={{ marginLeft: "10px" }}>
-                  <button
-                    onClick={() => {
-                      const newText = prompt("Edit message:", m.text);
-                      if (newText) {
-                        socket.emit("editMessage", {
-                          messageId: m._id,
-                          newText,
-                        });
-                      }
-                    }}
-                  >
-                    ✏️
-                  </button>
-                  <button
-                    onClick={() => {
-                      socket.emit("deleteMessage", { messageId: m._id });
-                    }}
-                  >
-                    🗑️
-                  </button>
-                  <button
-                    onClick={() => {
-                      socket.emit("deleteMessageForMe", {
-                        messageId: m._id,
-                        userId: user.userId,
-                      });
-                    }}
-                  >
-                    🚫
-                  </button>
+                  <button onClick={() => handleEdit(m)}>✏️</button>
+                  <button onClick={() => handleDelete(m)}>🗑️</button>
+                  <button onClick={() => handleDeleteForMe(m)}>🚫</button>
                 </div>
               )}
             </div>
           ))}
         </div>
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          disabled={!selectedUser}
-        />
-        <button onClick={sendMessage} disabled={!selectedUser}>
-          Send
-        </button>
+        <input value={input} onChange={(e) => setInput(e.target.value)} disabled={!selectedUser} />
+        <button onClick={sendMessage} disabled={!selectedUser}>Send</button>
       </div>
     </div>
   );
