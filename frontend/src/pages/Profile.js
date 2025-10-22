@@ -1,49 +1,79 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 
 export default function Profile({ user }) {
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState(null);
   const [profilePic, setProfilePic] = useState(null);
 
-  // Fetch existing profile photo on mount
-  useEffect(() => {
-    fetch(`http://localhost:5000/api/auth/user/${user.userId}`)
-      .then((res) => res.json())
-      .then((data) => setProfilePic(data.profilePic || null));
-  }, [user.userId]);
+  const fileInputRef = useRef(null);
 
-  // Update preview whenever a new file is selected
-  useEffect(() => {
-    if (!file) return setPreview(null);
 
+  useEffect(() => {
+    if (!user?.userId) return;
+    (async () => {
+      try {
+        const res = await fetch(`http://localhost:5000/api/auth/user/${user.userId}`);
+        if (!res.ok) {
+          const txt = await res.text();
+          console.error("Profile fetch failed:", res.status, txt.slice(0, 200));
+          return;
+        }
+        const data = await res.json();
+        let pic = data.profilePic || null;
+        console.log("Fetched profile data:", data);
+        if (pic) {
+          // make absolute URL if backend returned a relative path like "uploads/xxx.jpg"
+          if (!/^https?:\/\//i.test(pic)) {
+            const origin = window.location.origin; // e.g. http://localhost:3000
+            pic = `${origin}/${String(pic).replace(/^\/+/, "")}`;
+          }
+        }
+        setProfilePic(pic);
+      } catch (err) {
+        console.error("Failed to load profile:", err);
+      }
+    })();
+  }, [user?.userId]);
+
+
+  useEffect(() => {
+    if (!file) {
+      setPreview(null);
+      return;
+    }
     const objectUrl = URL.createObjectURL(file);
     setPreview(objectUrl);
-
-    return () => URL.revokeObjectURL(objectUrl); // cleanup
+    return () => URL.revokeObjectURL(objectUrl);
   }, [file]);
 
-  // Upload selected photo
   const uploadPhoto = async () => {
-    if (!file) return;
+    if (!file || !user?.userId) return;
     const formData = new FormData();
     formData.append("photo", file);
-
-    const res = await fetch(
-      `http://localhost:5000/api/auth/user/${user.userId}/photo`,
-      {
+    try {
+      const res = await fetch(`http://localhost:5000/api/auth/user/${user.userId}/photo`, {
         method: "POST",
         body: formData,
-      }
-    );
-
+      });
     const data = await res.json();
-    setProfilePic(data.profilePic);
+      setProfilePic(data.profilePic || null);
     setFile(null);
     setPreview(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    } catch (err) {
+      console.error("Upload failed:", err);
+    }
   };
 
-  // Remove current photo or clear preview
   const removePhoto = async () => {
+    if (!user?.userId) {
+      setProfilePic(null);
+      setFile(null);
+      setPreview(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+    try {
     if (profilePic) {
       await fetch(`http://localhost:5000/api/auth/user/${user.userId}/photo`, {
         method: "DELETE",
@@ -52,26 +82,38 @@ export default function Profile({ user }) {
     setProfilePic(null);
     setFile(null);
     setPreview(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    } catch (err) {
+      console.error("Remove photo failed:", err);
+    }
   };
+
+  if (!user) return null;
 
   return (
     <div style={{ padding: "20px" }}>
       <h2>Profile Settings</h2>
 
       {/* Show either existing profilePic or preview */}
-      {profilePic && !preview && (
-        <img src={profilePic} alt="Profile" width={100} />
-      )}
+      {profilePic 
+      && !preview 
+      && <img src={profilePic} alt="Profile" width={100} />}
+     
       {preview && <img src={preview} alt="Preview" width={100} />}
 
       <div style={{ marginTop: "10px" }}>
-        <input type="file" onChange={(e) => setFile(e.target.files[0])} />
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          onChange={(e) => setFile(e.target.files?.[0] || null)}
+          disabled={!!profilePic||!!preview} // disable if there's already a profilePic or preview
+          
+        />
         <button onClick={uploadPhoto} disabled={!file}>
           Upload
         </button>
-        {(profilePic || preview) && (
-          <button onClick={removePhoto}>Remove Photo</button>
-        )}
+        {(profilePic || preview) && <button onClick={removePhoto}>Remove Photo</button>}
       </div>
     </div>
   );
