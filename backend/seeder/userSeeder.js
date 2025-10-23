@@ -14,13 +14,13 @@ async function seedUsers() {
     {
       _id: new mongoose.Types.ObjectId("66aea3adc8819b162ce5e002"),
       username: "user1",
-      email: "user1@example.com",
+      email: "user1@gmail.com",
       password: "password1"
     },
     {
       _id: new mongoose.Types.ObjectId("66aea3adc8819b162ce5e003"),
       username: "user2",
-      email: "user2@example.com",
+      email: "user2@gmail.com",
       password: "password2"
     }
   ];
