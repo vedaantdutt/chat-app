@@ -55,10 +55,10 @@ export default function Profile({ user }) {
         method: "POST",
         body: formData,
       });
-    const data = await res.json();
+      const data = await res.json();
       setProfilePic(data.profilePic || null);
-    setFile(null);
-    setPreview(null);
+      setFile(null);
+      setPreview(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
     } catch (err) {
       console.error("Upload failed:", err);
@@ -74,14 +74,14 @@ export default function Profile({ user }) {
       return;
     }
     try {
-    if (profilePic) {
-      await fetch(`http://localhost:5000/api/auth/user/${user.userId}/photo`, {
-        method: "DELETE",
-      });
-    }
-    setProfilePic(null);
-    setFile(null);
-    setPreview(null);
+      if (profilePic) {
+        await fetch(`http://localhost:5000/api/auth/user/${user.userId}/photo`, {
+          method: "DELETE",
+        });
+      }
+      setProfilePic(null);
+      setFile(null);
+      setPreview(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
     } catch (err) {
       console.error("Remove photo failed:", err);
