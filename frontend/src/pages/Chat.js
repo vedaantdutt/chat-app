@@ -12,22 +12,27 @@ export default function Chat({ user, setUser }) {
   // initialize socket once
   const socketRef = useRef(null);
 
+
   useEffect(() => {
     socketRef.current = io("http://localhost:5000");
     const sock = socketRef.current;
 
+
     // send login when connected
-    sock.on("connect", () => {
-      if (user && user.userId) sock.emit("login", user.userId);
+    socketRef.current.on("connect", () => {
+      if (user && user.userId)
+        socketRef.current.emit("login", user.userId);
     });
 
+
     // online users list
-    sock.on("updateOnlineUsers", (online) => {
+    socketRef.current.on("updateOnlineUsers", (online) => {
       setOnlineUsers(online || []);
     });
 
+
     // server confirms saved message -> replace local placeholder (if any)
-    sock.on("messageSent", (serverMsg) => {
+    socketRef.current.on("messageSent", (serverMsg) => {
       setMessages((prev) =>
         prev.map((m) =>
           // match by text + sender + receiver + createdAt if available, otherwise fall back to keep as-is
@@ -41,39 +46,63 @@ export default function Chat({ user, setUser }) {
       );
     });
 
-    sock.on("receiveMessage", (msg) => {
-      setMessages((prev) => [...prev, msg]);
+
+    socketRef.current.on("messageStatus", (payload) => {
+      const messageId = payload?.messageId || payload?.message?._id || payload?._id;
+      const status = payload?.status;
+      console.log("Received messageStatus:", payload);
+      if (!messageId || !status) return;
+      console.log("Updating message status locally:", messageId, status);
+
+      setMessages((prev) =>
+        prev.map((m) => (String(m._id) === String(messageId) ? { ...m, status } : m))
+      );
     });
 
-    sock.on("messageEdited", (payload) => {
+
+    socketRef.current.on("receiveMessage", (msg) => {
+      setMessages((prev) => [...prev, msg]);
+      console.log("Received message:", msg);
+      // send delivered ack
+      if (msg && msg._id) {
+        socketRef.current.emit("messageDelivered", { messageId: msg._id });
+      }
+    });
+
+
+    socketRef.current.on("messageEdited", (payload) => {
       const updated = payload && payload._id ? payload : null;
       if (updated) {
         setMessages((prev) => prev.map((m) => (m._id === updated._id ? updated : m)));
       }
     });
 
-    sock.on("messageDeleted", (payload) => {
+
+    socketRef.current.on("messageDeleted", (payload) => {
       const id = typeof payload === "string" ? payload : payload && (payload._id || payload.messageId || payload.id);
       if (!id) return;
       setMessages((prev) => prev.filter((m) => m._id !== id));
     });
 
-    sock.on("messageDeletedForMe", ({ messageId }) => {
+
+    socketRef.current.on("messageDeletedForMe", ({ messageId }) => {
       if (!messageId) return;
       setMessages((prev) => prev.filter((m) => m._id !== messageId));
     });
 
+
     return () => {
-      sock.off("connect");
-      sock.off("updateOnlineUsers");
-      sock.off("messageSent");
-      sock.off("receiveMessage");
-      sock.off("messageEdited");
-      sock.off("messageDeleted");
-      sock.off("messageDeletedForMe");
-      sock.disconnect();
+      socketRef.current.off("connect");
+      socketRef.current.off("updateOnlineUsers");
+      socketRef.current.off("messageSent");
+      socketRef.current.off("receiveMessage");
+      socketRef.current.off("messageEdited");
+      socketRef.current.off("messageDeleted");
+      socketRef.current.off("messageDeletedForMe");
+      socketRef.current.disconnect();
     };
   }, [user?.userId]);
+
 
   // Fetch all users except self
   useEffect(() => {
@@ -84,6 +113,7 @@ export default function Chat({ user, setUser }) {
       })
       .catch(console.error);
   }, [user.userId]);
+
 
   // Load chat history with selected user and normalize _id
   useEffect(() => {
@@ -103,6 +133,20 @@ export default function Chat({ user, setUser }) {
       .catch(console.error);
   }, [selectedUser, user.userId]);
 
+
+  useEffect(() => {
+    if (!selectedUser) return;
+    // find messages that are from selectedUser to current user and not yet "read"
+    const toMark = messages.filter((m) => m.senderId === selectedUser._id && m.receiverId === user.userId && m.status !== "read" && m._id && !String(m._id).startsWith("local-"));
+    if (toMark.length === 0) return;
+    const ids = toMark.map((m) => m._id);
+    // emit read ack for each (server may accept batch or individual; here we emit individually)
+    ids.forEach((id) => socketRef.current?.emit("messageRead", { messageId: id }));
+    // optimistic single update to state
+    setMessages((prev) => prev.map((m) => (ids.includes(m._id) ? { ...m, status: "read" } : m)));
+  }, [selectedUser, messages]);
+
+
   const sendMessage = () => {
     if (!input || !selectedUser) return;
 
@@ -114,24 +158,37 @@ export default function Chat({ user, setUser }) {
       text: input,
       createdAt: new Date().toISOString(),
       pending: true,
+      status: "sent"
     };
     setMessages((prev) => [...prev, placeholder]);
 
+    console.log("Sending message:")
+
+    //working
     socketRef.current?.emit("sendMessage", {
+    // socket.broadcast.emit("sendMessage", {
       senderId: user.userId,
       receiverId: selectedUser._id,
-      text: input,
+      text: input
+    }, (ack) => {
+      console.log("sendMessage ack:", ack);
     });
+
+    console.log("Message sent to socket.");
 
     setInput("");
   };
 
   const handleEdit = (m) => {
     const newText = prompt("Edit message:", m.text);
+    console.log("New text from prompt:", newText);
     if (!newText || newText === m.text) return;
     // optimistic update locally
     setMessages((prev) => prev.map((msg) => (msg._id === m._id ? { ...msg, text: newText, edited: true } : msg)));
-    socketRef.current?.emit("editMessage", { messageId: m._id, newText });
+    console.log("Emitting editMessage for message ID:", m._id);
+    socketRef.current?.emit("editMessage", { messageId: m._id, newText },(ack) => {
+      console.log("editMessage ack:", ack);
+    });
   };
 
   const handleDelete = (m) => {

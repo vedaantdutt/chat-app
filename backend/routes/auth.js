@@ -72,6 +72,8 @@ router.get("/messages/:senderId/:receiverId", async (req, res) => {
   }
 });
 
+
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, "uploads/");
@@ -85,12 +87,79 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
+// helper: safely remove a file from uploads folder
+const fs = require("fs");
+const uploadsDir = path.resolve(__dirname, "..", "uploads");
+async function safeUnlink(filePath) {
+  if (!filePath) return;
+  try {
+    const absolute = path.resolve(filePath);
+    // ensure we only delete files inside the uploads folder
+    if (!absolute.startsWith(uploadsDir)) {
+      console.warn("Refusing to delete file outside uploads:", absolute);
+      return;
+    }
+    if (fs.existsSync(absolute)) {
+      await fs.promises.unlink(absolute);
+      console.log("Deleted file:", absolute);
+    }
+  } catch (err) {
+    console.error("Failed to delete file:", filePath, err);
+  }
+}
+
+
+// ...existing code...
+
+// return user profile (including public image URL if present)
+router.get("/user/:userId", async (req, res) => {
+  try {
+    console.log("Fetching profile for userId:", req.params.userId);
+    const user = await User.findById(req.params.userId).select("username email profilePic");
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    let profilePicUrl = null;
+    if (user.profilePic) {
+      // if DB stores a filesystem path like "uploads/..." convert to a full URL
+      if (String(user.profilePic).startsWith("http")) {
+        profilePicUrl = user.profilePic;
+      } else {
+        profilePicUrl = `${req.protocol}://${req.get("host")}/${String(user.profilePic).replace(/\\/g, "/")}`;
+      }
+    }
+
+    res.json({
+      userId: user._id,
+      username: user.username,
+      email: user.email,
+      profilePic: profilePicUrl,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ...existing code...
+
+
+
+
 // Upload profile photo
 router.post("/user/:userId/photo", upload.single("photo"), async (req, res) => {
   try {
     const photoPath = req.file.path; // relative path
+    // remove previous photo if present
+    const user = await User.findById(req.params.userId);
+    if (user && user.profilePic) {
+      await safeUnlink(user.profilePic);
+    }
+
+    // store the relative path in DB so safeUnlink can delete it later
     await User.findByIdAndUpdate(req.params.userId, { profilePic: photoPath });
-    res.json({ profilePic: photoPath });
+
+    // return a full URL to the client so it can use it as <img src="...">
+    const fullUrl = `${req.protocol}://${req.get("host")}/${photoPath.replace(/\\/g, "/")}`;
+    res.json({ profilePic: fullUrl });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -100,9 +169,8 @@ router.post("/user/:userId/photo", upload.single("photo"), async (req, res) => {
 router.delete("/user/:userId/photo", async (req, res) => {
   try {
     const user = await User.findById(req.params.userId);
-    if (user.profilePic) {
-      const fs = require("fs");
-      fs.unlinkSync(user.profilePic);
+    if (user && user.profilePic) {
+      await safeUnlink(user.profilePic);
     }
     await User.findByIdAndUpdate(req.params.userId, { profilePic: null });
     res.json({ message: "Profile photo removed" });
@@ -113,24 +181,24 @@ router.delete("/user/:userId/photo", async (req, res) => {
 
 
 // mark delivered
-// router.post("/messages/:id/delivered", async (req, res) => {
-//   const msg = await Message.findByIdAndUpdate(
-//     req.params.id,
-//     { status: "delivered" },
-//     { new: true }
-//   );
-//   res.json(msg);
-// });
+router.post("/messages/:id/delivered", async (req, res) => {
+  const msg = await Message.findByIdAndUpdate(
+    req.params.id,
+    { status: "delivered" },
+    { new: true }
+  );
+  res.json(msg);
+});
 
-// // mark read
-// router.post("/messages/:id/read", async (req, res) => {
-//   const msg = await Message.findByIdAndUpdate(
-//     req.params.id,
-//     { status: "read" },
-//     { new: true }
-//   );
-//   res.json(msg);
-// });
+// mark read
+router.post("/messages/:id/read", async (req, res) => {
+  const msg = await Message.findByIdAndUpdate(
+    req.params.id,
+    { status: "read" },
+    { new: true }
+  );
+  res.json(msg);
+});
 
 
 module.exports = router;
